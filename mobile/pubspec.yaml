@@ -1,0 +1,35 @@
+name: riskintel_mobile
+description: Industrial AI Risk Intelligence - Flutter app. OTP login, multi-site, events, arm/disarm, remote siren.
+version: 0.1.0+1
+publish_to: none
+
+environment:
+  sdk: ^3.2.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  # HTTP & auth
+  dio: ^5.4.0
+  flutter_secure_storage: ^9.0.0
+  # State & preferences
+  provider: ^6.1.1
+  shared_preferences: ^2.2.2
+  # Push
+  firebase_core: ^2.24.2
+  firebase_messaging: ^14.7.10
+  # UI
+  cupertino_icons: ^1.0.6
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.1
+
+flutter:
+  uses-material-design: true
+  # assets:
+  #   - assets/

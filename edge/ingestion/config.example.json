@@ -1,0 +1,14 @@
+{
+  "device_id": "EDGE-XXXX",
+  "max_queue_frames": 64,
+  "reconnect_delay_ms": 1000,
+  "max_reconnect_attempts": 10,
+  "cameras": [
+    {
+      "id": "cam_1",
+      "rtsp_url": "rtsp://user:pass@192.168.1.100:554/stream",
+      "fps_sample": 2,
+      "hw_decode": true
+    }
+  ]
+}

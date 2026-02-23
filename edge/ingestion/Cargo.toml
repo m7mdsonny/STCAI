@@ -1,0 +1,21 @@
+[package]
+name = "riskintel-ingestion"
+version = "0.1.0"
+edition = "2021"
+description = "RTSP video ingestion for Industrial AI Risk Intelligence - multi-camera, memory cap, reconnect"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+# RTSP / video (add when implementing)
+# ffmpeg-next = "6"  # or opencv, gstreamer bindings
+# ndarray = "0.15"
+
+[profile.release]
+lto = true
+codegen-units = 1

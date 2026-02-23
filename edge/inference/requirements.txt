@@ -1,0 +1,11 @@
+# RiskIntel Edge - AI Inference (Python + ONNX)
+# See docs/edge/01-edge-core-spec.md, 02-ai-modules.md
+
+onnxruntime-gpu>=1.16.0
+numpy>=1.24,<2
+Pillow>=10.0
+# Optional: opencv for decode if not using Rust buffers
+# opencv-python-headless>=4.8
+# Message queue / IPC to ingestion
+# redis>=5.0
+# or zeromq, shared memory

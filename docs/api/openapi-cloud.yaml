@@ -1,0 +1,325 @@
+openapi: 3.0.3
+info:
+  title: Industrial AI Risk Intelligence - Cloud API
+  version: 1.0.0
+  description: Multi-tenant SaaS API for mobile and web clients.
+
+servers:
+  - url: https://api.riskintel.example.com/v1
+    description: Production
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/otp/send:
+    post:
+      summary: Send OTP to phone
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone: { type: string, example: "+201012345678" }
+      responses:
+        '200': { description: OTP sent (rate-limited)
+          content:
+            application/json:
+              schema: { type: object, properties: { success: { type: boolean } } }
+        '429': { description: Too many requests }
+
+  /auth/otp/verify:
+    post:
+      summary: Verify OTP and get JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone, code]
+              properties:
+                phone: { type: string }
+                code: { type: string, minLength: 4, maxLength: 8 }
+                device_fingerprint: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  refresh_token: { type: string }
+                  expires_in: { type: integer }
+                  user: { $ref: '#/components/schemas/User' }
+        '401': { description: Invalid OTP }
+
+  /auth/refresh:
+    post:
+      summary: Refresh JWT
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  expires_in: { type: integer }
+        '401': { description: Invalid refresh token }
+
+  /tenants/me:
+    get:
+      summary: Current tenant
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tenant' }
+
+  /sites:
+    get:
+      summary: List sites
+      parameters:
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Site' } }
+                  total: { type: integer }
+
+  /sites/{site_id}:
+    get:
+      summary: Site detail and edge devices
+      parameters:
+        - name: site_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SiteDetail' }
+        '404': { description: Not found }
+
+  /sites/{site_id}/arm:
+    post:
+      summary: Arm site (enable detection and siren)
+      parameters:
+        - name: site_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Success }
+        '403': { description: Not licensed or no permission }
+
+  /sites/{site_id}/disarm:
+    post:
+      summary: Disarm site
+      parameters:
+        - name: site_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Success }
+
+  /sites/{site_id}/siren:
+    post:
+      summary: Remote siren trigger (Professional+)
+      parameters:
+        - name: site_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                duration_sec: { type: integer, default: 30 }
+      responses:
+        '204': { description: Command sent to edge }
+        '403': { description: Not licensed }
+
+  /events:
+    get:
+      summary: List events
+      parameters:
+        - name: site_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: type
+          in: query
+          schema: { type: string, enum: [fire, smoke, intrusion, loitering, tampering] }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: page
+          in: query
+          schema: { type: integer, default: 1 }
+        - name: page_size
+          in: query
+          schema: { type: integer, default: 20 }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Event' } }
+                  total: { type: integer }
+
+  /events/{event_id}:
+    get:
+      summary: Event detail (snapshot + clip URLs)
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventDetail' }
+        '404': { description: Not found }
+
+  /events/{event_id}/acknowledge:
+    post:
+      summary: Acknowledge alert
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '204': { description: Success }
+
+  /events/{event_id}/escalate:
+    post:
+      summary: Escalate alert
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        '204': { description: Success }
+
+  /license/status:
+    get:
+      summary: License status for current tenant
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tier: { type: string }
+                  state: { type: string }
+                  expires_at: { type: string, format: date-time }
+                  max_devices: { type: integer }
+                  max_phones: { type: integer }
+                  feature_flags: { type: object }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    Tenant:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        region: { type: string }
+        tier: { type: string }
+    Site:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        timezone: { type: string }
+        armed: { type: boolean }
+        device_count: { type: integer }
+    SiteDetail:
+      allOf:
+        - $ref: '#/components/schemas/Site'
+        - type: object
+          properties:
+            devices: { type: array, items: { $ref: '#/components/schemas/EdgeDevice' } }
+    EdgeDevice:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        device_id: { type: string }
+        name: { type: string }
+        status: { type: string }
+        last_seen_at: { type: string, format: date-time }
+    Event:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        site_id: { type: string, format: uuid }
+        type: { type: string }
+        priority: { type: string }
+        risk_score: { type: number }
+        occurred_at: { type: string, format: date-time }
+        acknowledged_at: { type: string, format: date-time, nullable: true }
+    EventDetail:
+      allOf:
+        - $ref: '#/components/schemas/Event'
+        - type: object
+          properties:
+            snapshot_url: { type: string, format: uri }
+            clip_url: { type: string, format: uri, nullable: true }
+            payload: { type: object }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        phone: { type: string }
+        role: { type: string }
+        display_name: { type: string }

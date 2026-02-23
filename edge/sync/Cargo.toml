@@ -1,0 +1,15 @@
+[package]
+name = "riskintel-sync"
+version = "0.1.0"
+edition = "2021"
+description = "Edge sync client: config, events, telemetry, license (TLS client cert)"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json", "rustls-tls"], default-features = false }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+chrono = "0.4"

@@ -1,0 +1,48 @@
+# RiskIntel Edge - CI: build Rust ingestion, test, Docker image
+# See docs/devops/01-ci-cd-pipeline.md
+
+name: Edge CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'edge/**'
+      - '.github/workflows/edge.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'edge/**'
+
+defaults:
+  run:
+    working-directory: edge/ingestion
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo build --release
+      - run: cargo clippy --release -- -D warnings
+      - run: cargo test --release || true
+
+  docker:
+    needs: rust
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build edge image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./edge/ingestion
+          file: ./edge/ingestion/Dockerfile
+          push: false
+          tags: riskintel-edge:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

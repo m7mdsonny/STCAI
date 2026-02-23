@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>STC Solutions AI - ذكاء اصطناعي للمراقبة والأمن</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body class="theme-dark">
+  <a href="#pageContent" class="skip-link">انتقل إلى المحتوى</a>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="logo">
+        <span class="logo-icon">🛡️</span>
+        <span class="logo-text">STC Solutions AI</span>
+      </div>
+      <nav class="nav" aria-label="القائمة الرئيسية">
+        <a href="#" class="nav-item active" data-page="dashboard">
+          <span class="nav-icon">📊</span>
+          <span>لوحة التحكم</span>
+        </a>
+        <a href="#" class="nav-item" data-page="cameras">
+          <span class="nav-icon">📷</span>
+          <span>الكاميرات</span>
+        </a>
+        <a href="#" class="nav-item" data-page="live">
+          <span class="nav-icon">📺</span>
+          <span>البث المباشر</span>
+        </a>
+        <a href="#" class="nav-item" data-page="events">
+          <span class="nav-icon">🔔</span>
+          <span>الأحداث</span>
+        </a>
+        <a href="#" class="nav-item" data-page="analytics">
+          <span class="nav-icon">📈</span>
+          <span>تحليلات الأشخاص</span>
+        </a>
+        <a href="#" class="nav-item" data-page="modules">
+          <span class="nav-icon">🧩</span>
+          <span>ضبط الموديولات</span>
+        </a>
+        <a href="#" class="nav-item" data-page="settings">
+          <span class="nav-icon">⚙️</span>
+          <span>الإعدادات</span>
+        </a>
+        <a href="#" class="nav-item" data-page="license">
+          <span class="nav-icon">🔑</span>
+          <span>الترخيص</span>
+        </a>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="trial-badge" id="trialBadge">تجربة 14 يوم</div>
+      </div>
+    </aside>
+    <main class="content">
+      <header class="header">
+        <div class="header-title-wrap">
+          <h1 class="page-title" id="pageTitle">لوحة التحكم</h1>
+          <span class="site-label" id="siteLabel" title="اسم الموقع والمنطقة الزمنية"></span>
+        </div>
+        <div class="header-actions">
+          <div class="header-notifications-wrap">
+            <button type="button" class="btn btn-ghost btn-icon" id="notificationsBell" title="التنبيهات" aria-expanded="false" aria-haspopup="true" aria-label="فتح قائمة التنبيهات">🔔</button>
+            <span class="notifications-badge" id="notificationsBadge" style="display:none" aria-live="polite">0</span>
+            <div class="notifications-dropdown" id="notificationsDropdown" style="display:none" role="menu" aria-label="قائمة التنبيهات"></div>
+          </div>
+          <button type="button" class="btn btn-ghost btn-icon" id="themeToggle" title="تبديل المظهر">🌓</button>
+          <button type="button" class="btn btn-secondary btn-icon" id="refreshBtn" title="تحديث">🔄</button>
+          <span class="arm-status" id="armStatus">غير مُفعّل</span>
+          <button type="button" class="btn btn-primary" id="armBtn">تفعيل</button>
+        </div>
+      </header>
+      <div id="pageContent" role="region" aria-label="محتوى الصفحة" tabindex="-1"></div>
+    </main>
+  </div>
+  <div id="alertTray" class="alert-tray" aria-live="polite"></div>
+  <div id="connectionErrorBanner" class="connection-error-banner" role="alert" aria-live="assertive" style="display:none">
+    <span>لا يوجد اتصال بالخادم. تحقق من الشبكة ثم <button type="button" class="btn-link" id="connectionErrorRetry">أعد المحاولة</button>.</span>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
