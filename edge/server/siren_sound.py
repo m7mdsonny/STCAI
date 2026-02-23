@@ -90,19 +90,25 @@ def _sounds_dir() -> str:
     return os.environ.get("EDGE_SOUNDS_DIR", str(Path(__file__).resolve().parent.parent / "data" / "sounds"))
 
 
-def _play_wav_file(file_path: str, duration_sec: float = 10.0) -> None:
+def _play_audio_file(file_path: str, duration_sec: float = 10.0) -> None:
     if not file_path or not os.path.isfile(file_path):
         return
-    if sys.platform == "win32":
+    ext = Path(file_path).suffix.lower()
+    if sys.platform == "win32" and ext == ".wav":
         import winsound
         winsound.PlaySound(file_path, winsound.SND_FILENAME | winsound.SND_NODEFAULT)
-    else:
-        for cmd in (["aplay", "-q", file_path], ["paplay", file_path]):
-            try:
-                subprocess.run(cmd, check=True, timeout=int(duration_sec) + 2, capture_output=True)
-                break
-            except (FileNotFoundError, subprocess.CalledProcessError):
-                continue
+        return
+    for cmd in (
+        ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path],
+        ["mpg123", "-q", file_path],
+        ["aplay", "-q", file_path],
+        ["paplay", file_path],
+    ):
+        try:
+            subprocess.run(cmd, check=True, timeout=int(duration_sec) + 2, capture_output=True)
+            return
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            continue
 
 
 def play_pc_sound(event_type: str, hw_config: dict) -> None:
@@ -127,7 +133,7 @@ def play_pc_sound(event_type: str, hw_config: dict) -> None:
                 sounds_dir = _sounds_dir()
                 path = os.path.join(sounds_dir, os.path.basename(fname))
                 if os.path.isfile(path):
-                    _play_wav_file(path, duration_sec)
+                    _play_audio_file(path, duration_sec)
                     return
         params = _get_preset_params(category, preset_name)
         freq1, freq2, beat_ms, duration_sec, pattern = params
@@ -137,7 +143,7 @@ def play_pc_sound(event_type: str, hw_config: dict) -> None:
             f.write(wav_bytes)
             path = f.name
         try:
-            _play_wav_file(path, duration_sec)
+            _play_audio_file(path, duration_sec)
         finally:
             try:
                 os.unlink(path)
@@ -155,7 +161,7 @@ def play_test_sound(sound_type: str, preset: str, hw_config: dict) -> None:
         if fname:
             path = os.path.join(_sounds_dir(), os.path.basename(fname))
             if os.path.isfile(path):
-                _play_wav_file(path, 5.0)
+                _play_audio_file(path, 5.0)
                 return
     category = "fire_smoke" if sound_type == "fire_smoke" else ("person" if sound_type == "person" else "theft")
     params = _get_preset_params(category, preset_name)

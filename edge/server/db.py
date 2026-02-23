@@ -174,12 +174,12 @@ async def get_events(conn, limit=100, type_filter=None, camera_id=None, include_
 async def get_event_by_id(conn, event_id: str, include_payload: bool = True) -> dict | None:
     if include_payload:
         cur = await conn.execute(
-            "SELECT id, type, priority, risk_score, camera_id, zone_id, payload, occurred_at, synced_at FROM events WHERE id = ?",
+            "SELECT id, type, priority, risk_score, camera_id, zone_id, payload, occurred_at, synced_at, snapshot_path FROM events WHERE id = ?",
             (event_id,),
         )
     else:
         cur = await conn.execute(
-            "SELECT id, type, priority, risk_score, camera_id, zone_id, occurred_at, synced_at FROM events WHERE id = ?",
+            "SELECT id, type, priority, risk_score, camera_id, zone_id, occurred_at, synced_at, snapshot_path FROM events WHERE id = ?",
             (event_id,),
         )
     row = await cur.fetchone()
@@ -189,9 +189,9 @@ async def get_event_by_id(conn, event_id: str, include_payload: bool = True) -> 
         return {
             "id": row[0], "type": row[1], "priority": row[2], "risk_score": row[3],
             "camera_id": row[4], "zone_id": row[5], "payload": json.loads(row[6]) if row[6] else {},
-            "occurred_at": row[7], "synced_at": row[8],
+            "occurred_at": row[7], "synced_at": row[8], "snapshot_path": row[9],
         }
-    return {"id": row[0], "type": row[1], "priority": row[2], "risk_score": row[3], "camera_id": row[4], "zone_id": row[5], "occurred_at": row[6], "synced_at": row[7]}
+    return {"id": row[0], "type": row[1], "priority": row[2], "risk_score": row[3], "camera_id": row[4], "zone_id": row[5], "occurred_at": row[6], "synced_at": row[7], "snapshot_path": row[8]}
 
 
 async def get_unsynced_events(conn, limit=50):
@@ -215,6 +215,19 @@ async def mark_events_synced(conn, event_ids: list):
     placeholders = ",".join("?" * len(event_ids))
     await conn.execute(f"UPDATE events SET synced_at = ? WHERE id IN ({placeholders})", [now] + event_ids)
     await conn.commit()
+
+
+async def update_event_snapshot_path(conn, event_id: str, snapshot_path: str):
+    await conn.execute("UPDATE events SET snapshot_path = ? WHERE id = ?", (snapshot_path, event_id))
+    await conn.commit()
+
+
+async def get_event_snapshot_path(conn, event_id: str) -> str | None:
+    cur = await conn.execute("SELECT snapshot_path FROM events WHERE id = ?", (event_id,))
+    row = await cur.fetchone()
+    if not row:
+        return None
+    return row[0]
 
 PERSON_SNAPSHOTS_MAX_BYTES = 20 * 1024 * 1024 * 1024  # 20 GB
 
@@ -304,3 +317,38 @@ async def audit(conn, action: str, actor: str = "local", details: dict = None):
         (action, actor, json.dumps(details or {}), now)
     )
     await conn.commit()
+
+
+async def delete_events_older_than(conn, iso_cutoff: str) -> int:
+    cur = await conn.execute("DELETE FROM events WHERE occurred_at < ?", (iso_cutoff,))
+    await conn.commit()
+    return cur.rowcount or 0
+
+
+async def get_event_counts_since(conn, iso_from: str) -> dict:
+    cur = await conn.execute(
+        "SELECT type, COUNT(*) FROM events WHERE occurred_at >= ? GROUP BY type",
+        (iso_from,),
+    )
+    rows = await cur.fetchall()
+    return {r[0]: int(r[1]) for r in rows}
+
+
+async def get_events_total(conn) -> int:
+    cur = await conn.execute("SELECT COUNT(*) FROM events")
+    row = await cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def get_person_snapshots_total(conn) -> int:
+    cur = await conn.execute("SELECT COUNT(*) FROM person_snapshots")
+    row = await cur.fetchone()
+    return int(row[0]) if row else 0
+
+
+async def get_person_snapshots_older_than(conn, iso_cutoff: str, limit: int = 500):
+    cur = await conn.execute(
+        "SELECT id, file_path FROM person_snapshots WHERE occurred_at < ? ORDER BY occurred_at ASC LIMIT ?",
+        (iso_cutoff, limit),
+    )
+    return await cur.fetchall()

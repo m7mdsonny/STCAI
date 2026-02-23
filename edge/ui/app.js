@@ -250,7 +250,7 @@ function renderEventDetailPage() {
     const badgeClass = ev.type === 'fire' ? 'fire' : ev.type === 'smoke' ? 'smoke' : ev.type === 'person' ? 'person' : (ev.type === 'intrusion' || ev.type === 'loitering') ? ev.type : 'theft';
     const desc = buildEventDescription(ev);
     const payloadHtml = ev.payload && Object.keys(ev.payload).length ? `<div class="event-detail-section"><h4>تفاصيل إضافية</h4><div class="payload-readable">${formatPayloadAsReadable(ev.payload)}</div></div>` : '';
-    const imgHtml = ev.type === 'person' ? `<div class="event-detail-section"><h4>صورة الحدث</h4><div class="event-detail-img-wrap"><img id="eventDetailImg" src="${API}/events/${encodeURIComponent(ev.id)}/snapshot" alt="لقطة الحدث" onerror="this.style.display='none'"></div></div>` : '';
+    const imgHtml = `<div class="event-detail-section"><h4>صورة الحدث</h4><div class="event-detail-img-wrap"><img id="eventDetailImg" src="${API}/events/${encodeURIComponent(ev.id)}/snapshot" alt="لقطة الحدث" onerror="this.style.display='none'"></div></div>`;
     el.innerHTML = `
       <div class="page-content" role="main" aria-labelledby="eventDetailHeading">
         <div class="event-detail-back"><button type="button" class="btn btn-ghost" id="eventDetailBack">← العودة إلى الأحداث</button></div>
@@ -313,6 +313,11 @@ function renderDashboard() {
         </div>
       </div>
       <div class="card">
+        <div class="card-title">تشخيص النظام الذكي</div>
+        <div class="card-subtitle">مؤشرات فورية عن أداء التحليلات والحفظ والاتصال</div>
+        <div id="dashboardDiag" class="stats-row"></div>
+      </div>
+      <div class="card">
         <div class="card-title">أحدث الأحداث</div>
         <div class="card-subtitle">آخر اكتشافات وحدات الذكاء الاصطناعي</div>
         <div class="table-wrap">
@@ -325,6 +330,7 @@ function renderDashboard() {
       </div>
     </div>`;
   loadDashboardEvents();
+  loadDashboardDiagnostics();
 }
 
 async function loadDashboardEvents() {
@@ -359,6 +365,27 @@ async function loadDashboardEvents() {
       empty.style.display = 'block';
     }
     if ($('dashboardEvents')) $('dashboardEvents').innerHTML = '';
+  }
+}
+
+
+
+async function loadDashboardDiagnostics() {
+  const box = $('dashboardDiag');
+  if (!box) return;
+  try {
+    const d = await api('/system/diagnostics');
+    const ai = d.ai || {};
+    const cams = d.cameras || {};
+    const ev24 = Object.values(ai.events_last_24h || {}).reduce((a, b) => a + Number(b || 0), 0);
+    box.innerHTML = `
+      <div class="stat-card"><div class="stat-label">كاميرات متصلة</div><div class="stat-value">${cams.connected || 0}/${cams.total || 0}</div></div>
+      <div class="stat-card"><div class="stat-label">أحداث آخر 24 ساعة</div><div class="stat-value">${ev24}</div></div>
+      <div class="stat-card"><div class="stat-label">إجمالي الأحداث</div><div class="stat-value">${ai.events_total || 0}</div></div>
+      <div class="stat-card"><div class="stat-label">صور الأشخاص</div><div class="stat-value">${ai.person_snapshots_total || 0}</div></div>
+    `;
+  } catch (err) {
+    box.innerHTML = `<div class="empty-state"><span class="icon">⚠️</span><p>${escapeHtml(err.message || 'تعذر تحميل التشخيص')}</p></div>`;
   }
 }
 
@@ -559,31 +586,21 @@ function renderLive() {
   function updateOneCamera(card, cameraId, cameraName) {
     const img = card.querySelector('.live-img');
     if (!img) return;
-    if (img.src && img.src.startsWith('blob:')) {
-      try { URL.revokeObjectURL(img.src); } catch (_) {}
-      const i = liveObjectURLs.indexOf(img.src);
-      if (i !== -1) liveObjectURLs.splice(i, 1);
+    const mode = card.dataset.liveMode || 'stream';
+    if (mode === 'snapshot') {
+      const snapUrl = API + '/cameras/' + encodeURIComponent(cameraId) + '/snapshot?t=' + Date.now();
+      img.src = snapUrl;
+      img.alt = cameraName;
+    } else {
+      const streamUrl = API + '/cameras/' + encodeURIComponent(cameraId) + '/stream?interval=' + encodeURIComponent(String(liveRefreshSec));
+      if (img.dataset.streamUrl !== streamUrl) {
+        img.dataset.streamUrl = streamUrl;
+        img.src = streamUrl;
+        img.alt = cameraName;
+      }
     }
-    const url = API + '/cameras/' + encodeURIComponent(cameraId) + '/snapshot?t=' + Date.now();
-    fetch(url, { credentials: 'same-origin' })
-      .then(r => r.ok ? r.blob() : Promise.reject(new Error(r.status)))
-      .then(blob => {
-        if (blob.size >= 500) {
-          const u = URL.createObjectURL(blob);
-          liveObjectURLs.push(u);
-          img.src = u;
-          img.alt = cameraName;
-        } else {
-          img.src = LIVE_PLACEHOLDER_SVG;
-          img.alt = 'لا بث';
-        }
-        const lu = $('liveLastUpdate');
-        if (lu) lu.textContent = new Date().toLocaleTimeString('ar-SA');
-      })
-      .catch(() => {
-        img.src = LIVE_PLACEHOLDER_SVG;
-        img.alt = 'لا بث أو خطأ اتصال';
-      });
+    const lu = $('liveLastUpdate');
+    if (lu) lu.textContent = new Date().toLocaleTimeString('ar-SA');
   }
 
   function refreshAll() {
@@ -599,7 +616,7 @@ function renderLive() {
     <div class="live-card" data-camera-id="${c.id}" data-camera-name="${escapeAttr(c.name || c.id)}">
       <div class="live-card-inner" style="transform:scale(${liveZoom / 100})">
         <div class="live-card-title">${escapeHtml(c.name || c.id)}</div>
-        <img class="live-img" src="${LIVE_PLACEHOLDER_SVG}" alt="جاري التحميل..." style="width:100%;aspect-ratio:16/10;object-fit:contain;background:var(--bg-primary);display:block">
+        <img class="live-img" src="${LIVE_PLACEHOLDER_SVG}" alt="جاري التحميل..." onerror="this.onerror=null;const c=this.closest('.live-card');if(c&&c.dataset.liveMode!=='snapshot'){c.dataset.liveMode='snapshot';this.src='/api/cameras/'+encodeURIComponent(c.dataset.cameraId)+'/snapshot?t='+Date.now();}else{this.src='${LIVE_PLACEHOLDER_SVG}';}" style="width:100%;aspect-ratio:16/10;object-fit:contain;background:var(--bg-primary);display:block">
       </div>
     </div>`).join('');
 
@@ -1316,7 +1333,26 @@ function renderSettings() {
           </div>
           <div class="form-group">
             <label>فاصل دورة التحليل (ثانية)</label>
-            <input type="number" name="detection_interval_sec" min="5" max="120" value="${adv.detection_interval_sec ?? 15}">
+            <input type="number" name="detection_interval_sec" min="2" max="120" value="${adv.detection_interval_sec ?? 15}">
+          </div>
+          <div class="form-group">
+            <label><input type="checkbox" name="event_snapshots_enabled" ${(adv.event_snapshots?.enabled ?? true) ? 'checked' : ''}> حفظ صورة حقيقية لكل حدث</label>
+          </div>
+          <div class="form-group">
+            <label>مسار فولدر صور الأحداث (اختياري، اتركه فارغًا للمسار الافتراضي)</label>
+            <input type="text" name="event_snapshots_storage_path" value="${(adv.event_snapshots?.storage_path || '').replace(/"/g, '&quot;')}" placeholder="/var/lib/stc/event_snapshots">
+          </div>
+          <div class="form-group">
+            <label>الحجم الأقصى لفولدر صور الأحداث (GB)</label>
+            <input type="number" name="event_snapshots_max_size_gb" min="1" max="500" value="${adv.event_snapshots?.max_size_gb ?? 20}">
+          </div>
+          <div class="form-group">
+            <label>الاحتفاظ بالأحداث (أيام)</label>
+            <input type="number" name="retention_events_days" min="1" max="3650" value="${adv.retention?.events_days ?? 30}">
+          </div>
+          <div class="form-group">
+            <label>الاحتفاظ بالصور (أيام)</label>
+            <input type="number" name="retention_snapshots_days" min="1" max="3650" value="${adv.retention?.snapshots_days ?? 30}">
           </div>
           <div class="modal-actions">
             <button type="submit" class="btn btn-primary">حفظ الإعدادات المتقدمة</button>
@@ -1370,9 +1406,9 @@ function renderSettings() {
             <button type="button" class="btn btn-secondary" style="margin-top:8px" id="testPersonSoundBtn">اختبار صوت الأشخاص</button>
           </div>
           <div class="form-group">
-            <label>رفع صوت صفّارة مخصص (WAV، حد 10 ميجا)</label>
+            <label>رفع صوت صفّارة مخصص (WAV أو MP3، حد 10 ميجا)</label>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-              <input type="file" id="sirenUploadInput" accept=".wav" style="max-width:220px">
+              <input type="file" id="sirenUploadInput" accept=".wav,.mp3,audio/wav,audio/mpeg" style="max-width:220px">
               <button type="button" class="btn btn-secondary" id="sirenUploadBtn">رفع</button>
             </div>
             <div id="sirenUploadStatus" style="font-size:0.9rem;color:var(--text-muted);margin-top:6px"></div>
@@ -1430,7 +1466,7 @@ function renderSettings() {
   btn('sirenUploadBtn', async () => {
     const input = $('sirenUploadInput');
     const status = $('sirenUploadStatus');
-    if (!input || !input.files || !input.files[0]) { if (status) status.textContent = 'اختر ملف WAV أولاً'; return; }
+    if (!input || !input.files || !input.files[0]) { if (status) status.textContent = 'اختر ملف WAV أو MP3 أولاً'; return; }
     if (status) status.textContent = 'جاري الرفع...';
     const fd = new FormData();
     fd.append('file', input.files[0]);
@@ -1614,7 +1650,16 @@ function renderSettings() {
           ...adv,
           sync_interval_sec: Number(fd.get('sync_interval_sec')) || 60,
           log_level: (fd.get('log_level') || 'INFO').toString(),
-          detection_interval_sec: Number(fd.get('detection_interval_sec')) || 15
+          detection_interval_sec: Number(fd.get('detection_interval_sec')) || 15,
+          event_snapshots: {
+            enabled: fd.get('event_snapshots_enabled') === 'on',
+            storage_path: (fd.get('event_snapshots_storage_path') || '').toString().trim(),
+            max_size_gb: Number(fd.get('event_snapshots_max_size_gb')) || 20
+          },
+          retention: {
+            events_days: Number(fd.get('retention_events_days')) || 30,
+            snapshots_days: Number(fd.get('retention_snapshots_days')) || 30
+          }
         }
       }) });
       await loadConfig();

@@ -65,6 +65,15 @@ DEFAULT_SYSTEM = {
         "log_level": "INFO",
         "detection_interval_sec": 15,
         "mock_events_enabled": False,
+        "event_snapshots": {
+            "enabled": True,
+            "storage_path": "",
+            "max_size_gb": 20
+        },
+        "retention": {
+            "events_days": 30,
+            "snapshots_days": 30
+        },
         "ai_modules": {
             "fire_smoke": {"enabled": True, "sensitivity": 0.7, "description": "كشف لهب ودخان وشرر"},
             "anti_theft": {
@@ -130,6 +139,21 @@ class SystemSettingsUpdate(BaseModel):
     whatsapp: dict | None = None
     mobile_link: dict | None = None
     advanced: dict | None = None
+
+
+def _with_system_defaults(system: dict | None) -> dict:
+    src = system if isinstance(system, dict) else {}
+    out = dict(DEFAULT_SYSTEM)
+    out["notifications"] = {**(DEFAULT_SYSTEM.get("notifications") or {}), **(src.get("notifications") or {})}
+    out["whatsapp"] = {**(DEFAULT_SYSTEM.get("whatsapp") or {}), **(src.get("whatsapp") or {})}
+    out["mobile_link"] = {**(DEFAULT_SYSTEM.get("mobile_link") or {}), **(src.get("mobile_link") or {})}
+    adv_default = DEFAULT_SYSTEM.get("advanced") or {}
+    adv_src = src.get("advanced") or {}
+    out["advanced"] = {**adv_default, **adv_src}
+    out["advanced"]["event_snapshots"] = {**(adv_default.get("event_snapshots") or {}), **(adv_src.get("event_snapshots") or {})}
+    out["advanced"]["retention"] = {**(adv_default.get("retention") or {}), **(adv_src.get("retention") or {})}
+    out["advanced"]["ai_modules"] = {**(adv_default.get("ai_modules") or {}), **(adv_src.get("ai_modules") or {})}
+    return out
 
 
 def _trial_ok(license_row: dict) -> bool:
@@ -212,6 +236,29 @@ async def health():
     return {"status": "ok", "service": "edge"}
 
 
+
+
+@app.get("/api/system/diagnostics")
+async def api_system_diagnostics():
+    conn = await get_conn()
+    try:
+        system = _with_system_defaults(await get_config(conn, KEY_SYSTEM, DEFAULT_SYSTEM))
+        cameras = await get_config(conn, KEY_CAMERAS, DEFAULT_CAMERAS)
+        if not isinstance(cameras, list):
+            cameras = []
+        runtime = getattr(app.state, "ai_runtime", {}) or {}
+        camera_status = getattr(app.state, "camera_status", {}) or {}
+        connected = sum(1 for c in cameras if (camera_status.get(c.get("id", "")) or {}).get("connected") is True)
+        return {
+            "server_time": datetime.now(timezone.utc).isoformat(),
+            "cameras": {"total": len(cameras), "connected": connected, "disconnected": max(0, len(cameras) - connected)},
+            "ai": runtime,
+            "advanced": (system.get("advanced") or {}),
+        }
+    finally:
+        await conn.close()
+
+
 @app.get("/api/license")
 async def api_license():
     conn = await get_conn()
@@ -243,9 +290,7 @@ async def api_config():
             site = DEFAULT_SITE
         device_key = await get_config(conn, KEY_DEVICE_KEY, "") or ""
         cloud_url = await get_config(conn, KEY_CLOUD_URL, "") or ""
-        system = await get_config(conn, KEY_SYSTEM, DEFAULT_SYSTEM)
-        if not isinstance(system, dict):
-            system = dict(DEFAULT_SYSTEM)
+        system = _with_system_defaults(await get_config(conn, KEY_SYSTEM, DEFAULT_SYSTEM))
         return {"cameras": cameras, "hardware": hardware, "armed": armed, "site": site, "device_key_configured": bool(device_key), "cloud_url": cloud_url or None, "system_settings": system}
     finally:
         await conn.close()
@@ -301,7 +346,7 @@ def _capture_snapshot_sync(rtsp_url: str) -> bytes | None:
 def _is_demo_or_unreachable_url(rtsp_url: str) -> bool:
     """Return True if URL is demo/localhost so we skip blocking capture."""
     u = (rtsp_url or "").strip().lower()
-    return not u or "localhost" in u or "127.0.0.1" in u or "/demo" in u or u.startswith("rtsp://localhost")
+    return (not u) or ("/demo" in u) or u.endswith("/demo")
 
 
 @app.get("/api/cameras/{camera_id}/snapshot")
@@ -397,9 +442,7 @@ async def api_mobile_pairing_code():
     """Return or generate 6-digit pairing code for mobile link. Valid 10 minutes."""
     conn = await get_conn()
     try:
-        system = await get_config(conn, KEY_SYSTEM, DEFAULT_SYSTEM)
-        if not isinstance(system, dict):
-            system = dict(DEFAULT_SYSTEM)
+        system = _with_system_defaults(await get_config(conn, KEY_SYSTEM, DEFAULT_SYSTEM))
         mobile = system.get("mobile_link") or {}
         if not mobile.get("enabled"):
             return {"code": "", "expires_at": None, "message": "Enable mobile link in settings first."}
@@ -525,18 +568,33 @@ async def api_event_by_id(event_id: str):
 
 @app.get("/api/events/{event_id}/snapshot")
 async def api_event_snapshot_image(event_id: str):
-    """Return person snapshot image for this event if available (person events only)."""
+    """Return stored snapshot image for this event (all types), fallback to person snapshot."""
     conn = await get_conn()
     try:
+        ev = await get_event_by_id(conn, event_id, include_payload=False)
+        if ev and ev.get("snapshot_path"):
+            path = Path(ev["snapshot_path"])
+            if path.is_file():
+                return FileResponse(path, media_type="image/jpeg")
         row = await get_person_snapshot_by_event_id(conn, event_id)
+        if row:
+            path = Path(row["file_path"])
+            if path.is_file():
+                return FileResponse(path, media_type="image/jpeg")
+        if not ev:
+            raise HTTPException(status_code=404, detail="Event not found")
+        cameras = await get_config(conn, KEY_CAMERAS, DEFAULT_CAMERAS)
+        cam = next((c for c in (cameras or []) if c.get("id") == ev.get("camera_id")), None)
+        rtsp_url = (cam or {}).get("rtsp_url", "") if cam else ""
     finally:
         await conn.close()
-    if not row:
-        raise HTTPException(status_code=404, detail="No snapshot for this event")
-    path = Path(row["file_path"])
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="Image file not found")
-    return FileResponse(path, media_type="image/jpeg")
+    if _is_demo_or_unreachable_url(rtsp_url):
+        return Response(content=_SNAPSHOT_PLACEHOLDER_JPEG, media_type="image/jpeg")
+    loop = asyncio.get_running_loop()
+    jpg_bytes = await loop.run_in_executor(None, lambda: _capture_snapshot_sync(rtsp_url))
+    if not jpg_bytes:
+        jpg_bytes = _SNAPSHOT_PLACEHOLDER_JPEG
+    return Response(content=jpg_bytes, media_type="image/jpeg")
 
 
 @app.get("/api/person-snapshots")
@@ -569,21 +627,26 @@ SOUNDS_DIR = Path(__file__).resolve().parent.parent / "data" / "sounds"
 
 @app.get("/api/sounds")
 async def api_sounds_list():
-    """List uploaded custom siren sound files (WAV)."""
+    """List uploaded custom siren sound files (.wav/.mp3)."""
     if not SOUNDS_DIR.exists():
         return {"sounds": []}
-    files = [f.name for f in SOUNDS_DIR.iterdir() if f.is_file() and f.suffix.lower() == ".wav"]
+    files = [f.name for f in SOUNDS_DIR.iterdir() if f.is_file() and f.suffix.lower() in {".wav", ".mp3"}]
     return {"sounds": sorted(files)}
 
 
 @app.post("/api/sounds/upload")
 async def api_sounds_upload(file: UploadFile = File(...)):
-    """Upload a WAV file for custom siren sound. Replaces if same name."""
-    if not file.filename or not file.filename.lower().endswith(".wav"):
-        raise HTTPException(status_code=400, detail="Only .wav files allowed")
-    safe_name = "".join(c for c in file.filename if c.isalnum() or c in "._- ").strip() or "custom.wav"
-    if not safe_name.lower().endswith(".wav"):
-        safe_name += ".wav"
+    """Upload a sound file for custom siren sound (.wav/.mp3). Replaces if same name."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File name is required")
+    ext = Path(file.filename).suffix.lower()
+    if ext not in {".wav", ".mp3"}:
+        raise HTTPException(status_code=400, detail="Only .wav or .mp3 files allowed")
+    default_name = f"custom{ext or '.wav'}"
+    safe_name = "".join(c for c in file.filename if c.isalnum() or c in "._- ").strip() or default_name
+    safe_ext = Path(safe_name).suffix.lower()
+    if safe_ext not in {".wav", ".mp3"}:
+        safe_name = str(Path(safe_name).with_suffix(ext or ".wav"))
     SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
     path = SOUNDS_DIR / safe_name
     content = await file.read()
@@ -697,9 +760,7 @@ async def api_system_update(body: SystemSettingsUpdate):
     """Update system settings: notifications, WhatsApp, mobile link, advanced."""
     conn = await get_conn()
     try:
-        system = await get_config(conn, KEY_SYSTEM, DEFAULT_SYSTEM)
-        if not isinstance(system, dict):
-            system = dict(DEFAULT_SYSTEM)
+        system = _with_system_defaults(await get_config(conn, KEY_SYSTEM, DEFAULT_SYSTEM))
         if body.notifications is not None:
             system["notifications"] = {**(system.get("notifications") or {}), **body.notifications}
         if body.whatsapp is not None:

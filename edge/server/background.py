@@ -3,11 +3,12 @@ Edge Server - Background loop: run detectors per camera, event engine, write eve
 Trial: no cloud required; events stored locally and optionally synced when online.
 """
 import asyncio
+import base64
 import logging
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 # Add parent for event_engine and inference
@@ -25,9 +26,19 @@ from db import (
     get_person_snapshots_oldest,
     delete_person_snapshot,
     PERSON_SNAPSHOTS_MAX_BYTES,
+    update_event_snapshot_path,
+    delete_events_older_than,
+    get_person_snapshots_older_than,
+    get_events_total,
+    get_person_snapshots_total,
+    get_event_counts_since,
 )
 
 logger = logging.getLogger("edge.background")
+
+_EVENT_SNAPSHOT_PLACEHOLDER_JPEG = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="
+)
 
 try:
     from event_engine.engine import process_detection, trigger_hardware, Detection as EDetection, Event
@@ -119,6 +130,31 @@ def _priority_level(p: str) -> int:
     return {"critical": 4, "high": 3, "medium": 2, "low": 1}.get((p or "").lower(), 0)
 
 
+def _iso_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+async def _run_housekeeping(conn, system: dict):
+    adv = (system.get("advanced") or {}) if isinstance(system, dict) else {}
+    retention = (adv.get("retention") or {}) if isinstance(adv, dict) else {}
+    events_days = max(1, min(3650, int(retention.get("events_days", 30) or 30)))
+    snapshots_days = max(1, min(3650, int(retention.get("snapshots_days", 30) or 30)))
+    ev_cutoff = (datetime.now(timezone.utc) - timedelta(days=events_days)).isoformat()
+    snap_cutoff = (datetime.now(timezone.utc) - timedelta(days=snapshots_days)).isoformat()
+    deleted_events = await delete_events_older_than(conn, ev_cutoff)
+    old_snaps = await get_person_snapshots_older_than(conn, snap_cutoff, limit=1000)
+    deleted_snaps = 0
+    for sid, fpath in old_snaps:
+        removed = await delete_person_snapshot(conn, sid)
+        if removed and os.path.isfile(removed):
+            try:
+                os.unlink(removed)
+            except OSError:
+                pass
+        deleted_snaps += 1
+    return {"deleted_events": deleted_events, "deleted_snapshots": deleted_snaps}
+
+
 async def process_and_store_event(conn, ev, armed: bool, siren_enabled: bool, hw: dict, min_priority: str = "low"):
     event_id = getattr(ev, "event_id", None) or str(uuid.uuid4())
     setattr(ev, "event_id", event_id)
@@ -147,34 +183,95 @@ async def process_and_store_event(conn, ev, armed: bool, siren_enabled: bool, hw
     logger.info("Event: %s %s %s", ev.type, ev.priority, ev.camera_id)
 
 
-async def _save_person_snapshot_and_enforce_quota(conn, ev, rtsp_url: str):
-    """Capture frame from RTSP, save as person snapshot, enforce 20GB limit (FIFO)."""
+def _resolve_event_snapshot_settings(system: dict) -> tuple[Path, int, bool]:
+    adv = (system.get("advanced") or {}) if isinstance(system, dict) else {}
+    cfg = (adv.get("event_snapshots") or {}) if isinstance(adv, dict) else {}
+    enabled = cfg.get("enabled", True) is not False
+    max_size_gb = max(1, min(500, int(cfg.get("max_size_gb", 20) or 20)))
+    max_bytes = max_size_gb * 1024 * 1024 * 1024
+    storage_path = (cfg.get("storage_path") or "").strip()
+    if storage_path:
+        base = Path(storage_path).expanduser()
+    else:
+        data_dir = Path(os.environ.get("EDGE_DB_PATH", str(Path(__file__).resolve().parent.parent / "data" / "riskintel.db"))).parent
+        base = data_dir / "event_snapshots"
+    return base, max_bytes, enabled
+
+
+def _folder_size_bytes(path: Path) -> int:
+    total = 0
+    if not path.exists():
+        return 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            fp = Path(root) / name
+            try:
+                total += fp.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _enforce_folder_quota(path: Path, max_bytes: int):
+    total = _folder_size_bytes(path)
+    if total <= max_bytes:
+        return
+    files = []
+    for f in path.glob("*.jpg"):
+        try:
+            files.append((f.stat().st_mtime, f))
+        except OSError:
+            continue
+    files.sort(key=lambda x: x[0])
+    for _, fp in files:
+        if total <= max_bytes:
+            break
+        try:
+            sz = fp.stat().st_size
+            fp.unlink(missing_ok=True)
+            total -= sz
+        except OSError:
+            continue
+
+
+async def _capture_event_snapshot(conn, ev, rtsp_url: str, system: dict):
     try:
         from camera_snapshot import capture_snapshot_sync
     except ImportError:
-        return
+        return None
+    snap_dir, max_bytes, enabled = _resolve_event_snapshot_settings(system)
+    if not enabled:
+        return None
     loop = asyncio.get_running_loop()
     jpg_bytes = await loop.run_in_executor(None, lambda: capture_snapshot_sync(rtsp_url))
+    if not jpg_bytes and ("/demo" in (rtsp_url or "").lower()):
+        jpg_bytes = _EVENT_SNAPSHOT_PLACEHOLDER_JPEG
     if not jpg_bytes:
-        return
-    data_dir = Path(os.environ.get("EDGE_DB_PATH", str(Path(__file__).resolve().parent.parent / "data" / "riskintel.db"))).parent
-    snap_dir = data_dir / "person_snapshots"
+        return None
     snap_dir.mkdir(parents=True, exist_ok=True)
+    file_path = snap_dir / f"{getattr(ev, 'event_id', str(uuid.uuid4()))}.jpg"
+    file_path.write_bytes(jpg_bytes)
+    _enforce_folder_quota(snap_dir, max_bytes)
+    return file_path
+
+
+async def _save_person_snapshot_and_enforce_quota(conn, ev, jpg_path: Path | None):
+    """Link event snapshot into person snapshots and enforce person quota metadata."""
+    if jpg_path is None or not jpg_path.is_file():
+        return
     snapshot_id = str(uuid.uuid4())
     event_id = getattr(ev, "event_id", None) or ""
     occurred_at = getattr(ev, "occurred_at", None) or datetime.now(timezone.utc).isoformat()
     if not isinstance(occurred_at, str):
         occurred_at = datetime.now(timezone.utc).isoformat()
-    file_path = snap_dir / f"{snapshot_id}.jpg"
-    file_path.write_bytes(jpg_bytes)
-    size_bytes = len(jpg_bytes)
-    await insert_person_snapshot(conn, snapshot_id, event_id, ev.camera_id, str(file_path), size_bytes, occurred_at)
+    size_bytes = jpg_path.stat().st_size
+    await insert_person_snapshot(conn, snapshot_id, event_id, ev.camera_id, str(jpg_path), size_bytes, occurred_at)
     total = await get_person_snapshots_total_size(conn)
     while total > PERSON_SNAPSHOTS_MAX_BYTES:
         oldest = await get_person_snapshots_oldest(conn, limit=10)
         if not oldest:
             break
-        for sid, fpath in oldest:
+        for sid, _ in oldest:
             removed = await delete_person_snapshot(conn, sid)
             if removed and os.path.isfile(removed):
                 try:
@@ -184,7 +281,7 @@ async def _save_person_snapshot_and_enforce_quota(conn, ev, rtsp_url: str):
             total = await get_person_snapshots_total_size(conn)
             if total <= PERSON_SNAPSHOTS_MAX_BYTES:
                 break
-    logger.info("Person snapshot saved: %s (%d bytes)", snapshot_id, size_bytes)
+    logger.info("Person snapshot linked: %s (%d bytes)", snapshot_id, size_bytes)
 
 
 async def sync_events_to_cloud():
@@ -255,9 +352,10 @@ async def background_loop(app):
         app.state.camera_status_prev = {}
     while True:
         try:
-            await asyncio.sleep(15)
-            loop_count += 1
             cameras, armed, hw, ai_modules, system = await get_cameras_config()
+            adv = (system.get("advanced") or {}) if isinstance(system, dict) else {}
+            detection_interval_sec = max(2.0, min(120.0, float(adv.get("detection_interval_sec", 15) or 15)))
+            loop_count += 1
             notif = (system.get("notifications") or {}) if isinstance(system, dict) else {}
             min_priority = (notif.get("min_priority") or "low").strip() or "low"
             siren_enabled = hw.get("siren_enabled", True)
@@ -291,14 +389,10 @@ async def background_loop(app):
                             logger.info("Camera %s disconnected", cid)
                         continue
                     try:
-                        mock_ok = (system.get("advanced") or {}) if isinstance(system, dict) else {}
-                        if not mock_ok.get("mock_events_enabled", False):
-                            dets = []
-                        else:
-                            dets = await asyncio.get_running_loop().run_in_executor(
-                                None,
-                                lambda cid=cid, mods=modules, sens=sensitivity: run_detectors_sync(cid, mods, sens, ai_modules),
-                            )
+                        dets = await asyncio.get_running_loop().run_in_executor(
+                            None,
+                            lambda cid=cid, mods=modules, sens=sensitivity: run_detectors_sync(cid, mods, sens, ai_modules),
+                        )
                         for d in dets:
                             det = (EDetection or type(d))(
                                 camera_id=d.camera_id,
@@ -311,10 +405,15 @@ async def background_loop(app):
                             ev = process_detection(det, frame_buffer, last_events)
                             if ev is not None:
                                 await process_and_store_event(conn, ev, armed, siren_enabled, hw, min_priority)
-                                if ev.type == "person" and rtsp_url:
+                                snapshot_path = None
+                                if rtsp_url:
+                                    snapshot_path = await _capture_event_snapshot(conn, ev, rtsp_url, system)
+                                    if snapshot_path:
+                                        await update_event_snapshot_path(conn, getattr(ev, "event_id", ""), str(snapshot_path))
+                                if ev.type == "person":
                                     person_cfg = (ai_modules.get("person") or {}) if isinstance(ai_modules, dict) else {}
                                     if person_cfg.get("save_snapshots", True):
-                                        await _save_person_snapshot_and_enforce_quota(conn, ev, rtsp_url)
+                                        await _save_person_snapshot_and_enforce_quota(conn, ev, snapshot_path)
                     except Exception as e:
                         last_error = str(e)
                     if connected:
@@ -340,17 +439,29 @@ async def background_loop(app):
                 # Every 4th loop (~60s) push unsynced events to cloud when configured
                 if loop_count % 4 == 0:
                     await sync_events_to_cloud()
+                if loop_count % 120 == 0:
+                    hk = await _run_housekeeping(conn, system)
+                    app.state.ai_runtime["last_housekeeping"] = {"at": _iso_utc_now(), **hk}
+                if loop_count % 2 == 0:
+                    from_dt = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+                    app.state.ai_runtime["events_last_24h"] = await get_event_counts_since(conn, from_dt)
+                    app.state.ai_runtime["events_total"] = await get_events_total(conn)
+                    app.state.ai_runtime["person_snapshots_total"] = await get_person_snapshots_total(conn)
+                    app.state.ai_runtime["last_loop_at"] = _iso_utc_now()
             finally:
                 await conn.close()
+            await asyncio.sleep(detection_interval_sec)
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.exception("Background loop: %s", e)
+            await asyncio.sleep(5)
 
 
 def start_background(app):
     """Start background task (called from lifespan, so event loop is running)."""
     app.state.camera_status = {}
     app.state.camera_status_prev = {}
+    app.state.ai_runtime = {"last_loop_at": None, "events_last_24h": {}, "events_total": 0, "person_snapshots_total": 0, "last_housekeeping": None}
     task = asyncio.create_task(background_loop(app))
     setattr(app.state, "_bg_task", task)
